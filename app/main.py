@@ -1,10 +1,13 @@
-from fastapi import Depends, FastAPI, HTTPException, status
+from fastapi import Depends, FastAPI, HTTPException, Query, status
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
+from sqlalchemy.exc import IntegrityError, SQLAlchemyError
 
 from app.database import get_db
-from app.models import Monitor
-from app.schemas import MonitorCreate, MonitorRead, MonitorUpdate
+from app.models import CheckResult, Monitor
+from app.schemas import CheckResultRead, MonitorCreate, MonitorRead, MonitorUpdate
+
+from app.checker import run_check
 
 
 app = FastAPI()
@@ -17,7 +20,11 @@ def health_check():
 
 @app.get("/db-health")
 def database_health_check(db: Session = Depends(get_db)):
-    result = db.execute(text("SELECT 1")).scalar()
+    try:
+        result = db.execute(text("SELECT 1")).scalar()
+    except SQLAlchemyError:
+        db.rollback()
+        raise HTTPException(status_code=503, detail="Database unavailable") from None
     return {"database": "ok" if result == 1 else "error"}
 
 
@@ -32,7 +39,7 @@ def create_monitor(
 ):
     monitor = Monitor(
         name=monitor_data.name,
-        url=monitor_data.url,
+        url=str(monitor_data.url),
     )
 
     db.add(monitor)
@@ -43,8 +50,8 @@ def create_monitor(
 
 
 @app.get("/monitors", response_model=list[MonitorRead])
-def get_monitors(db: Session = Depends(get_db)):
-    monitors = db.scalars(select(Monitor).order_by(Monitor.id)).all()
+def get_monitors(db: Session = Depends(get_db), limit: int = Query(50, ge=1, le=100), offset: int = Query(0, ge=0)):
+    monitors = db.scalars(select(Monitor).order_by(Monitor.id).limit(limit).offset(offset)).all()
     return monitors
 
 
@@ -78,7 +85,7 @@ def update_monitor(
             detail="Monitor not found",
         )
 
-    update_data = monitor_data.model_dump(exclude_unset=True)
+    update_data = monitor_data.model_dump(exclude_unset=True, mode="json")
 
     for field, value in update_data.items():
         setattr(monitor, field, value)
@@ -106,4 +113,29 @@ def delete_monitor(
         )
 
     db.delete(monitor)
-    db.commit()
+    try:
+        db.commit()
+    except IntegrityError:
+        db.rollback()
+        raise HTTPException(status_code=409, detail="Monitor has history; deactivate it instead") from None
+
+
+@app.post("/monitors/{monitor_id}/check", response_model=CheckResultRead)
+def check_monitor(monitor_id: int, db: Session = Depends(get_db)):
+    monitor = get_monitor(monitor_id, db)
+    return run_check(monitor, db)
+
+
+@app.get("/monitors/{monitor_id}/checks", response_model=list[CheckResultRead])
+def get_check_history(
+    monitor_id: int,
+    db: Session = Depends(get_db),
+    limit: int = Query(50, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+):
+    get_monitor(monitor_id, db)
+    return db.scalars(
+        select(CheckResult).where(CheckResult.monitor_id == monitor_id)
+        .order_by(CheckResult.checked_at.desc(), CheckResult.id.desc())
+        .limit(limit).offset(offset)
+    ).all()
