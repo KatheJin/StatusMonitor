@@ -26,18 +26,26 @@ Validation: 18 tests passed against isolated SQLite and mocked HTTP. PostgreSQL
 and Docker were unavailable in the execution environment. Existing migrations
 were preserved; no development database was modified.
 
-## 2. Scheduled checks and PostgreSQL integration
+## 2. Standalone scheduled worker — implemented
 
 Why next: automate the already-tested operation before building deployment and
 observability around it.
 
-- Run a separate worker, not a scheduler in each Uvicorn process.
-- Define polling interval, scheduling timestamps and overlap prevention.
-- Use bounded concurrency and one database session per check.
-- Handle worker shutdown, database failures and restart recovery.
-- Add a history index for monitor/time queries with a new migration.
-- Test inactive monitors, failures, restart and duplicate-work prevention.
-- Run migration upgrade/downgrade on a disposable PostgreSQL database.
+- Separate `python -m app.worker` process; fixed 60-second cycles.
+- Reuse `run_check`, serial execution and one session per check.
+- Re-read active state, isolate failed transactions and retry failed discovery.
+- Interruptible waits and graceful stop after the current check.
+- 14 new worker tests; all 32 API/worker tests pass using mocks/SQLite.
+- README includes separate API/worker commands and manual PostgreSQL verification.
+
+The user verified stage 1 against local Docker PostgreSQL, including migrations
+and real HTTP checks. Stage 2 PostgreSQL verification remains manual and has not
+been executed by Codex. No automated PostgreSQL integration tests were added.
+
+Scope intentionally excludes concurrency, cross-process locks, persisted schedules,
+new migrations, observability, CI and deployment configuration. Start one worker
+instance only; a restart checks immediately without backfilling missed intervals.
+History indexing and disposable PostgreSQL migration tests remain future work.
 
 ## 3. Reproducible runtime
 
