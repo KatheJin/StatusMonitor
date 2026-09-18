@@ -38,20 +38,24 @@ observability around it.
 - 14 new worker tests; all 32 API/worker tests pass using mocks/SQLite.
 - README includes separate API/worker commands and manual PostgreSQL verification.
 
-The user verified stage 1 against local Docker PostgreSQL, including migrations
-and real HTTP checks. Stage 2 PostgreSQL verification remains manual and has not
-been executed by Codex. No automated PostgreSQL integration tests were added.
+The user verified stages 1 and 2 against local Windows Docker PostgreSQL, including
+migrations and real checks. No automated PostgreSQL pytest tests were added.
 
 Scope intentionally excludes concurrency, cross-process locks, persisted schedules,
 new migrations, observability, CI and deployment configuration. Start one worker
 instance only; a restart checks immediately without backfilling missed intervals.
 History indexing and disposable PostgreSQL migration tests remain future work.
 
-## 3. Reproducible runtime
+## 3. Reproducible runtime — implemented, Docker acceptance pending
 
-- Add Dockerfile and Compose API, worker and one-shot migration services.
-- Add readiness checks, startup dependencies and environment examples.
-- Verify a clean-volume startup and persisted data after restart.
+- Shared non-root Docker image for API, worker and one-shot Alembic migrations.
+- PostgreSQL readiness, migration completion gates and API database healthcheck.
+- Existing named volume retained; container hostname explicitly set to `db`.
+- PowerShell acceptance script uses a unique project/fresh volume, checks real
+  worker history, then verifies data survives restart and container recreation.
+- Existing 32 mock/SQLite tests pass. Docker is unavailable in Codex; actual image
+  build, clean-volume and persistence verification must run on Windows Docker Desktop.
+- No API/worker behavior changes, observability, CI or cloud deployment added.
 
 ## 4. Observability
 

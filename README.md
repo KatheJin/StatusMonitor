@@ -19,9 +19,125 @@ checks. Observability is planned, not implemented yet.
 - `alembic/`: versioned database migrations; no automatic create_all at startup.
 - `tests/test_api.py`: isolated API regression tests with simulated HTTP outcomes.
 - `tests/test_worker.py`: SQLite persistence and mocked scheduling/shutdown tests.
-- `compose.yaml`: PostgreSQL 16 only, with persistent storage.
+- `Dockerfile`, `.dockerignore`: shared non-root Python 3.12 application image.
+- `compose.yaml`: PostgreSQL 16, one-shot migrations, API and worker.
+- `scripts/verify-docker.ps1`: real Docker acceptance checks in an isolated project.
 
-## Local setup (Python 3.12)
+## Docker runtime (Stage 3)
+
+Use Docker Desktop with Linux containers and Docker Compose v2. From the repository
+root, copy `.env.example` to `.env` **only if you do not already have `.env`**, then
+set your database credentials. Existing database volumes retain their original
+credentials; changing `.env` does not change PostgreSQL users in an existing volume.
+
+```powershell
+docker compose config --quiet
+docker compose up --build -d
+docker compose ps -a
+docker compose logs migrate
+Invoke-RestMethod http://127.0.0.1:8000/db-health
+```
+
+Stop any locally running API/worker first to avoid port collisions and duplicate
+checks. Use the same repository directory/Compose project name as before to reuse
+your existing `${project}_postgres_data` volume. The volume key `postgres_data`
+is unchanged; the old fixed container name has been removed so independent
+projects can coexist. Do not change project names when trying to reuse old data.
+
+| Service | Responsibility and startup condition |
+| --- | --- |
+| `db` | PostgreSQL 16; named volume mounted at `/var/lib/postgresql/data`; `pg_isready` healthcheck |
+| `migrate` | Same app image; waits for healthy db, runs `python -m alembic upgrade head`, exits 0 on success |
+| `api` | Same app image; waits for healthy db and successful migration; runs Uvicorn on `0.0.0.0:8000` |
+| `worker` | Same app image; same db/migration gates; runs `python -m app.worker` |
+
+Compose creates a project-scoped default network. Its DNS resolves service name
+`db` to PostgreSQL, so all application services explicitly use `POSTGRES_HOST=db`
+and `POSTGRES_PORT=5432`, regardless of local `.env` hostname values. `localhost`
+inside a container means that container itself. The healthchecks use loopback
+intentionally: each probes its own service. No database IP address is hard-coded.
+
+Host ports default to `127.0.0.1:8000` (API) and `127.0.0.1:5432` (database).
+Set `API_PUBLISHED_PORT` / `DB_PUBLISHED_PORT` to avoid conflicts; these do not
+change ports used between containers. `.env` and local virtual environments are
+excluded from the image; credentials are passed at container runtime.
+
+API health probes `/db-health`, checking that HTTP and a database query succeed.
+Worker readiness is gated by db/migration startup; no misleading worker HTTP
+healthcheck is added. Its logs and new history rows demonstrate actual progress.
+Compose health status does not automatically restart unhealthy services. This
+stage does not add a restart supervisor or worker heartbeat. Docker allows the
+worker 30 seconds to stop gracefully before force-killing it; a stuck operation
+may exceed that allowance.
+
+### Migration and lifecycle commands
+
+On startup, `migrate` must exit successfully before API/worker start. An exited
+`migrate` container with status 0 is expected. A migration failure blocks dependent
+startup: inspect its logs, fix the cause, and rerun `docker compose up --build -d`.
+Migrations do not run inside API/worker entrypoints. The startup conditions follow
+the [Docker Compose startup-order documentation](https://docs.docker.com/compose/how-tos/startup-order/).
+
+To apply migrations explicitly while updating application code:
+
+```powershell
+docker compose stop api worker
+docker compose build
+docker compose up -d db
+docker compose run --rm migrate
+# Continue only if the migration command succeeded.
+docker compose up -d api worker
+```
+
+Useful commands:
+
+```powershell
+docker compose logs --tail=100 api worker migrate
+docker compose stop worker
+docker compose start worker
+docker compose restart db api worker
+docker compose down
+docker compose up -d
+```
+
+`restart` reuses containers and does not apply new migrations or rebuild code.
+`down` without `-v` preserves PostgreSQL data; `down -v` deletes the project's
+database volume. Run only one worker instance. Containers run the copied code;
+after code changes use `docker compose up --build -d`.
+
+### Clean-volume and persistence acceptance check (Windows)
+
+The following script creates a unique Compose project with a fresh named volume,
+using ports 18000 and 15432. It does not delete or reuse your development volume.
+It requires an existing `.env`. Run it in PowerShell:
+
+```powershell
+.\scripts\verify-docker.ps1
+# If those host ports are busy:
+.\scripts\verify-docker.ps1 -ApiPort 18001 -DbPort 15433
+```
+
+It checks configuration, builds/starts all services, waits for database/API
+readiness, creates a monitor for `http://api:8000/health`, and waits up to 150
+seconds for the real worker to persist an HTTP 200 result. This target exercises
+Docker DNS, HTTP and PostgreSQL without depending on the public internet. It then
+disables the monitor, stops the worker, restarts db/API, verifies the original
+monitor and result IDs, and repeats the data check after `down` and `up` recreate
+the containers using the retained volume. Any failed assertion exits with an error.
+
+Resources are deliberately retained, including on failure. The script prints the
+unique project name and commands to stop its containers and optionally remove
+only its test volume. Use `docker compose -p <printed-project> logs` for diagnosis.
+
+**Verification status:** Codex passed the existing 32 mock/SQLite tests and checked
+the PowerShell script syntax. Docker CLI/Desktop is unavailable in that environment;
+image build, Compose runtime validation, clean-volume startup and persistence
+acceptance checks must be run on your Windows Docker Desktop. No successful Docker
+run is claimed. Python/PostgreSQL image tags and transitive pip dependencies are
+not digest/lockfile pinned, so this provides repeatable setup rather than a
+byte-for-byte reproducible build.
+
+## Alternative: local Python processes (Python 3.12)
 
 Copy `.env.example` to `.env` and set your development database password.
 Docker Desktop must be installed and running.
@@ -37,6 +153,8 @@ python -m uvicorn app.main:app --reload
 
 Database host defaults to `localhost`, port `5432`. Override using
 `POSTGRES_HOST` / `POSTGRES_PORT`. Never commit `.env`.
+If you change `DB_PUBLISHED_PORT`, match `POSTGRES_PORT` for local Python processes.
+Do not also run the Compose API/worker when using this alternative.
 Swagger UI: <http://127.0.0.1:8000/docs>.
 
 ## Run API and worker separately
@@ -90,8 +208,9 @@ waits for an in-flight HTTP/database operation; there is no hard shutdown deadli
 
 ### Verify against your local Docker PostgreSQL
 
-These are manual PostgreSQL integration checks, separate from pytest. The worker
-stage has not been run against PostgreSQL in the Codex environment.
+These are manual PostgreSQL integration checks, separate from pytest. Stages 1
+and 2 have been verified by the user against Windows Docker PostgreSQL; the
+containerized Stage 3 runtime still needs the acceptance check above.
 
 First prepare the database, then run terminal A and terminal B as above:
 
@@ -197,5 +316,6 @@ Currently intended for trusted local development. The API has no authentication
 or target-network restrictions: accepting URLs enables requests from the server's
 network, including private addresses. Do not expose it as a public write API.
 Before deployment, add access controls and an explicit outbound network policy.
-Application containers, production deployment instructions and observability will
-be delivered as subsequent increments. See [development plan](docs/development-plan.md).
+Application containers are included for local reproducible setup. Production
+deployment instructions and observability remain future increments.
+See [development plan](docs/development-plan.md).

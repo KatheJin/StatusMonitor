@@ -1,15 +1,65 @@
+x-app: &app
+  image: ${COMPOSE_PROJECT_NAME:-statusmonitor}-app:local
+  build:
+    context: .
+  environment:
+    POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+    POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
+    POSTGRES_HOST: db
+    POSTGRES_PORT: "5432"
+
 services:
   db:
     image: postgres:16
-    container_name: status-monitor-db
     environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER:?Set POSTGRES_USER in .env}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+      POSTGRES_DB: ${POSTGRES_DB:?Set POSTGRES_DB in .env}
     ports:
-      - "5432:5432"
+      - "127.0.0.1:${DB_PUBLISHED_PORT:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U \"$$POSTGRES_USER\" -d \"$$POSTGRES_DB\""]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 10s
+
+  migrate:
+    <<: *app
+    command: ["python", "-m", "alembic", "upgrade", "head"]
+    restart: "no"
+    depends_on:
+      db:
+        condition: service_healthy
+
+  api:
+    <<: *app
+    ports:
+      - "127.0.0.1:${API_PUBLISHED_PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/db-health', timeout=3).close()"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+      start_period: 10s
+
+  worker:
+    <<: *app
+    command: ["python", "-m", "app.worker"]
+    stop_grace_period: 30s
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
 
 volumes:
   postgres_data:
