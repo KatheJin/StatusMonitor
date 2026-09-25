@@ -53,7 +53,8 @@ try {
     $base = "http://127.0.0.1:$ApiPort"
     Write-Host "Isolated project: $project; fresh volume: ${project}_postgres_data"
     Invoke-Compose config --quiet
-    Invoke-Compose up --build -d
+    # Keep this acceptance check scoped to the original application runtime.
+    Invoke-Compose up --build -d db migrate api worker
     Wait-Api
     # No manually triggered check: the standalone worker must create this row.
     $monitor = Invoke-RestMethod -Method Post -Uri "$base/monitors" -ContentType 'application/json' -Body '{"name":"Docker acceptance","url":"http://api:8000/health"}'
@@ -78,7 +79,7 @@ try {
 
     # down (without -v) removes containers/network but preserves the named volume.
     Invoke-Compose down
-    Invoke-Compose up -d
+    Invoke-Compose up -d db migrate api worker
     Wait-Api
     Assert-SavedData
     Invoke-Compose ps -a

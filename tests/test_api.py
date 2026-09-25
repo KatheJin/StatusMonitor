@@ -4,6 +4,7 @@ from contextlib import contextmanager
 import httpx
 import pytest
 from fastapi.testclient import TestClient
+from prometheus_client import CONTENT_TYPE_LATEST
 from sqlalchemy import create_engine, event
 from sqlalchemy.orm import sessionmaker
 from sqlalchemy.pool import StaticPool
@@ -37,6 +38,15 @@ def create(client):
     response = client.post('/monitors', json={'name': 'Example', 'url': 'https://example.com'})
     assert response.status_code == 201
     return response.json()['id']
+
+
+def test_metrics(client):
+    response = client.get('/metrics')
+    assert response.status_code == 200
+    assert response.headers['content-type'] == CONTENT_TYPE_LATEST
+    assert '# HELP python_info ' in response.text
+    assert '# TYPE python_info gauge' in response.text
+    assert any(line.startswith('python_info{') for line in response.text.splitlines())
 
 
 @pytest.mark.parametrize('payload', [

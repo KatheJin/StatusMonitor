@@ -2,7 +2,7 @@
 
 A FastAPI and PostgreSQL service for recording website availability checks.
 An incremental backend/SWE/operations portfolio project with manual and scheduled
-checks. Observability is planned, not implemented yet.
+checks and Prometheus scraping of API runtime metrics. Grafana remains planned.
 
 ## Architecture
 
@@ -20,7 +20,8 @@ checks. Observability is planned, not implemented yet.
 - `tests/test_api.py`: isolated API regression tests with simulated HTTP outcomes.
 - `tests/test_worker.py`: SQLite persistence and mocked scheduling/shutdown tests.
 - `Dockerfile`, `.dockerignore`: shared non-root Python 3.12 application image.
-- `compose.yaml`: PostgreSQL 16, one-shot migrations, API and worker.
+- `compose.yaml`: PostgreSQL 16, one-shot migrations, API, worker and Prometheus.
+- `prometheus/prometheus.yml`: scrape the API through the Compose network every 15 seconds.
 - `scripts/verify-docker.ps1`: real Docker acceptance checks in an isolated project.
 
 ## Docker runtime (Stage 3)
@@ -50,6 +51,7 @@ projects can coexist. Do not change project names when trying to reuse old data.
 | `migrate` | Same app image; waits for healthy db, runs `python -m alembic upgrade head`, exits 0 on success |
 | `api` | Same app image; waits for healthy db and successful migration; runs Uvicorn on `0.0.0.0:8000` |
 | `worker` | Same app image; same db/migration gates; runs `python -m app.worker` |
+| `prometheus` | Waits for healthy API; scrapes `api:8000/metrics`; persists samples in `prometheus_data` |
 
 Compose creates a project-scoped default network. Its DNS resolves service name
 `db` to PostgreSQL, so all application services explicitly use `POSTGRES_HOST=db`
@@ -102,13 +104,15 @@ docker compose up -d
 
 `restart` reuses containers and does not apply new migrations or rebuild code.
 `down` without `-v` preserves PostgreSQL data; `down -v` deletes the project's
-database volume. Run only one worker instance. Containers run the copied code;
+database and Prometheus volumes. Run only one worker instance. Containers run the copied code;
 after code changes use `docker compose up --build -d`.
 
 ### Clean-volume and persistence acceptance check (Windows)
 
 The following script creates a unique Compose project with a fresh named volume,
 using ports 18000 and 15432. It does not delete or reuse your development volume.
+It explicitly starts only db, migrate, API and worker; Prometheus is outside this
+acceptance check and does not compete with your development instance for port 9090.
 It requires an existing `.env`. Run it in PowerShell:
 
 ```powershell
@@ -268,6 +272,7 @@ verification monitor to retain its history without further checks.
 | Method | Path | Behavior |
 | --- | --- | --- |
 | GET | `/health` | Process liveness |
+| GET | `/metrics` | Prometheus text-format metrics for the API process |
 | GET | `/db-health` | Database readiness; 503 if unavailable |
 | POST | `/monitors` | Create with name (1-100 characters) and HTTP(S) URL |
 | GET | `/monitors` | List, using limit (default 50, maximum 100) and offset |
@@ -296,6 +301,77 @@ deleting ones with results. Manual checks remain available for inactive monitors
 the worker skips them. Editing a URL retains history under the same
 monitor ID; results do not yet snapshot the URL at check time.
 
+## Metrics
+
+`GET /metrics` exposes the default `prometheus_client` registry using
+`generate_latest()` and `CONTENT_TYPE_LATEST`, scraped by the Compose Prometheus service.
+It includes `python_info` and Python garbage-collection metrics. Default `process_*`
+metrics (CPU, memory, etc.) are available in Linux containers; they are not provided
+on native Windows by the library's default process collector. See the
+[official collector documentation](https://prometheus.github.io/client_python/collector/).
+These describe the API process, not the separate worker or monitored targets.
+
+After installing updated dependencies and restarting the API, or rebuilding with
+`docker compose up --build -d`, inspect the endpoint:
+
+```powershell
+curl.exe -i http://127.0.0.1:8000/metrics
+```
+
+Expect HTTP 200, a Prometheus text content type, `# HELP` / `# TYPE` lines and a
+`python_info{...}` sample. No Prometheus server or Grafana is needed for this check.
+
+### Prometheus service
+
+Start the stack from the repository root:
+
+```powershell
+docker compose config --quiet
+docker compose up --build -d
+docker compose logs --tail=50 prometheus
+```
+
+Open [Prometheus](http://127.0.0.1:9090) and its
+[Targets page](http://127.0.0.1:9090/targets). After API readiness and one scrape
+interval (15 seconds), the `statusmonitor-api` target should be **UP** with endpoint
+`http://api:8000/metrics`. Compose DNS resolves `api` on the internal network;
+the scrape target does not use the host's published API port or `localhost`.
+
+In the query page, evaluate:
+
+```promql
+up{job="statusmonitor-api"}
+```
+
+Expect `1`. Then query an existing Linux process metric:
+
+```promql
+process_cpu_seconds_total{job="statusmonitor-api"}
+```
+
+This cumulative API-process CPU time can be zero on an idle process. You can also
+query `python_info{job="statusmonitor-api"}`. These are existing runtime metrics,
+not worker or business metrics. For a DOWN target, inspect the error on Targets,
+`docker compose logs api prometheus`, and the API's `/metrics` response.
+
+Configuration is mounted read-only at `/etc/prometheus/prometheus.yml`; after
+editing it, run `docker compose restart prometheus`. Validate it with:
+
+```powershell
+docker compose exec prometheus promtool check config /etc/prometheus/prometheus.yml
+```
+
+The UI is published only on `127.0.0.1:9090`. The named `prometheus_data` volume
+stores samples at `/prometheus`, following the
+[official Docker storage setup](https://prometheus.io/docs/prometheus/latest/installation/).
+Retention is 15 days. Ordinary `docker compose down` followed by `up -d` reuses
+that volume within the same Compose project; `down -v` deletes it. To verify
+persistence, query a graph time range containing samples from before down/up;
+those samples should remain, with a gap while Prometheus was stopped.
+
+Docker execution is unavailable in the Codex environment; target UP, real scraping
+and retained samples must be verified locally using these steps.
+
 ## Tests
 
 ```powershell
@@ -305,7 +381,7 @@ python -m pytest -q
 Tests use in-memory SQLite with foreign keys enabled and mocked HTTP calls.
 They require neither Docker nor access to public websites, and do not touch your
 development database. They are not a substitute for PostgreSQL migration and
-integration tests. There are 32 tests: 18 API and 14 worker tests. Worker persistence
+integration tests. There are 33 tests: 19 API and 14 worker tests. Worker persistence
 tests use SQLite; cadence, retry and signal tests use mocks without sleeping for
 60 seconds. There are no automated PostgreSQL integration tests in this stage.
 Upstream Starlette/AnyIO deprecation warnings are currently visible.
