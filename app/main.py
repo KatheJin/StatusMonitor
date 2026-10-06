@@ -1,4 +1,6 @@
 from fastapi import Depends, FastAPI, HTTPException, Query, status
+from fastapi.responses import Response
+from prometheus_client import CONTENT_TYPE_LATEST, generate_latest
 from sqlalchemy import select, text
 from sqlalchemy.orm import Session
 from sqlalchemy.exc import IntegrityError, SQLAlchemyError
@@ -11,6 +13,11 @@ from app.checker import run_check
 
 
 app = FastAPI()
+
+
+@app.get("/metrics", response_class=Response)
+def metrics():
+    return Response(generate_latest(), headers={"Content-Type": CONTENT_TYPE_LATEST})
 
 
 @app.get("/health")
