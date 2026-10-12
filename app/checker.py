@@ -6,6 +6,7 @@ import httpx
 from sqlalchemy.orm import Session
 
 from app.models import CheckResult, Monitor
+from app.metrics import record_check
 
 
 def run_check(monitor: Monitor, db: Session) -> CheckResult:
@@ -21,14 +22,17 @@ def run_check(monitor: Monitor, db: Session) -> CheckResult:
     except httpx.RequestError as exc:
         error = type(exc).__name__
 
+    duration_seconds = time.perf_counter() - start
+    is_up = status_code is not None and 200 <= status_code < 400
     result = CheckResult(
         monitor_id=monitor.id,
         status_code=status_code,
-        is_up=status_code is not None and 200 <= status_code < 400,
-        response_time_ms=(time.perf_counter() - start) * 1000,
+        is_up=is_up,
+        response_time_ms=duration_seconds * 1000,
         error=error,
     )
     db.add(result)
     db.commit()
+    record_check(is_up, duration_seconds)
     db.refresh(result)
     return result

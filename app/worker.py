@@ -4,6 +4,7 @@ import logging
 import signal
 import time
 from threading import Event
+from prometheus_client import start_http_server
 
 from sqlalchemy import select
 
@@ -68,9 +69,16 @@ def main() -> None:
     if hasattr(signal, "SIGBREAK"):
         signals.append(signal.SIGBREAK)
     previous_handlers = {sig: signal.signal(sig, request_stop) for sig in signals}
+    metrics_server = None
+    metrics_thread = None
     try:
+        metrics_server, metrics_thread = start_http_server(8001, addr="0.0.0.0")
         run_worker(stop_event)
     finally:
+        if metrics_server is not None:
+            metrics_server.shutdown()
+            metrics_server.server_close()
+            metrics_thread.join()
         for sig, handler in previous_handlers.items():
             signal.signal(sig, handler)
         engine.dispose()

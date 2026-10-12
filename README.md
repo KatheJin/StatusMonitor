@@ -311,6 +311,68 @@ on native Windows by the library's default process collector. See the
 [official collector documentation](https://prometheus.github.io/client_python/collector/).
 These describe the API process, not the separate worker or monitored targets.
 
+### Business check metrics
+
+`app/metrics.py` defines two metrics, recorded once by the shared `run_check()`
+after committing CheckResult. Manual API checks and scheduled worker checks both
+use this path; no scheduling interval has changed.
+
+| Metric | Meaning |
+| --- | --- |
+| `statusmonitor_checks_total{result="up"\|"down"}` | Committed checks, split by result; HTTP 200–399 is up, other statuses and transport errors/timeouts are down |
+| `statusmonitor_check_duration_seconds` | Histogram of HTTP check time in seconds, including failed HTTP attempts; excludes database writes |
+
+No URL, monitor ID or monitor name labels are used. Database commit failures do
+not increment these metrics. They are process-local counters, reset on process
+restart, not an authoritative count of all historical database rows. A crash
+between commit and metric update, or before a scrape, may leave an unobserved check.
+
+API `/metrics` exposes manual checks only. The worker starts a separate metrics
+HTTP server on port 8001, scraped internally as `worker:8001/metrics` with job
+`statusmonitor-worker`. Port 8001 is not published to the host in Compose. When
+running `python -m app.worker` locally, that port must be available. The metrics
+server shuts down with the worker and does not change the 60-second schedule.
+
+PromQL examples across both processes:
+
+```promql
+# Current process-lifetime totals by result
+sum by (result) (statusmonitor_checks_total)
+
+# Checks per second by result over the last five minutes
+sum by (result) (rate(statusmonitor_checks_total[5m]))
+
+# Failed checks observed over the last hour (estimated by Prometheus)
+sum(increase(statusmonitor_checks_total{result="down"}[1h]))
+
+# Mean HTTP check duration in seconds
+sum(rate(statusmonitor_check_duration_seconds_sum[5m]))
+/ sum(rate(statusmonitor_check_duration_seconds_count[5m]))
+
+# Approximate p95 duration across API and worker
+histogram_quantile(0.95, sum by (le) (rate(statusmonitor_check_duration_seconds_bucket[5m])))
+```
+
+Rates need multiple scrapes; duration queries have no useful value without checks
+in the selected window. For local verification:
+
+```powershell
+python -m pytest -q
+docker compose up --build -d
+docker compose restart prometheus
+docker compose exec prometheus promtool check config /etc/prometheus/prometheus.yml
+```
+
+Confirm both `statusmonitor-api` and `statusmonitor-worker` are UP on Targets.
+Create an active monitor for `http://api:8000/health` using Swagger UI, note its ID,
+and invoke `POST /monitors/{id}/check`. After the next scrape, query
+`statusmonitor_checks_total{job="statusmonitor-api",result="up"}` and verify it
+increased. Wait at least 60 seconds plus the 15-second scrape interval, then
+verify `statusmonitor_checks_total{job="statusmonitor-worker",result="up"}` and
+`statusmonitor_check_duration_seconds_count` increased too. A monitor targeting
+`http://api:8000/nonexistent` exercises the down counter (HTTP 404). Deactivate
+test monitors when done. No manual request is needed for the worker increment.
+
 After installing updated dependencies and restarting the API, or rebuilding with
 `docker compose up --build -d`, inspect the endpoint:
 
@@ -381,7 +443,7 @@ python -m pytest -q
 Tests use in-memory SQLite with foreign keys enabled and mocked HTTP calls.
 They require neither Docker nor access to public websites, and do not touch your
 development database. They are not a substitute for PostgreSQL migration and
-integration tests. There are 33 tests: 19 API and 14 worker tests. Worker persistence
+integration tests. There are 34 tests: 19 API and 15 worker tests. Worker persistence
 tests use SQLite; cadence, retry and signal tests use mocks without sleeping for
 60 seconds. There are no automated PostgreSQL integration tests in this stage.
 Upstream Starlette/AnyIO deprecation warnings are currently visible.

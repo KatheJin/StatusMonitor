@@ -44,7 +44,7 @@ def results(sessions):
 
 
 @pytest.mark.parametrize("outcome", [200, 503, httpx.ReadTimeout("timeout")])
-def test_cycle_uses_real_checker_and_persists_only_active(sessions, monkeypatch, outcome):
+def test_cycle_uses_real_checker_and_persists_only_active(sessions, monkeypatch, business_metrics, outcome):
     @contextmanager
     def stream(*args, **kwargs):
         if isinstance(outcome, Exception):
@@ -57,6 +57,26 @@ def test_cycle_uses_real_checker_and_persists_only_active(sessions, monkeypatch,
     assert [row.monitor_id for row in saved] == [1, 3]
     assert all(row.is_up == (outcome == 200) for row in saved)
     assert all(row.error == ("timeout" if isinstance(outcome, Exception) else None) for row in saved)
+    label = 'up' if outcome == 200 else 'down'
+    assert business_metrics.get_sample_value('statusmonitor_checks_total', {'result': label}) == 2
+    assert business_metrics.get_sample_value('statusmonitor_check_duration_seconds_count') == 2
+    expected_seconds = sum(row.response_time_ms for row in saved) / 1000
+    assert business_metrics.get_sample_value('statusmonitor_check_duration_seconds_sum') == pytest.approx(expected_seconds)
+
+
+def test_uncommitted_check_does_not_increment_metrics(sessions, monkeypatch, business_metrics):
+    @contextmanager
+    def stream(*args, **kwargs):
+        yield httpx.Response(200)
+
+    monkeypatch.setattr('app.checker.httpx.stream', stream)
+    with sessions() as db:
+        # Nonexistent monitor forces a real foreign-key failure on commit.
+        from sqlalchemy.exc import IntegrityError
+        with pytest.raises(IntegrityError):
+            worker.run_check(Monitor(id=999, name='missing', url='https://example.com'), db)
+    assert business_metrics.get_sample_value('statusmonitor_checks_total', {'result': 'up'}) == 0
+    assert business_metrics.get_sample_value('statusmonitor_check_duration_seconds_count') == 0
 
 
 def test_failed_transaction_does_not_break_next_monitor(sessions, monkeypatch, caplog):
@@ -172,6 +192,9 @@ def test_already_stopped_worker_does_no_work(monkeypatch):
 
 
 def test_main_registers_stop_signals_and_disposes_engine(monkeypatch):
+    metrics_server, metrics_thread = Mock(), Mock()
+    start_metrics = Mock(return_value=(metrics_server, metrics_thread))
+    monkeypatch.setattr(worker, "start_http_server", start_metrics)
     handlers = {}
     previous = object()
 
@@ -191,3 +214,7 @@ def test_main_registers_stop_signals_and_disposes_engine(monkeypatch):
     worker.main()
     assert all(handler is previous for handler in handlers.values())
     dispose.assert_called_once()
+    start_metrics.assert_called_once_with(8001, addr="0.0.0.0")
+    metrics_server.shutdown.assert_called_once()
+    metrics_server.server_close.assert_called_once()
+    metrics_thread.join.assert_called_once()

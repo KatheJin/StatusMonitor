@@ -1,5 +1,6 @@
 import os
 from contextlib import contextmanager
+from types import SimpleNamespace
 
 import httpx
 import pytest
@@ -87,7 +88,7 @@ def test_crud(client):
     (httpx.ReadTimeout(''), False, 'timeout'),
     (httpx.ConnectError('sensitive target details'), False, 'ConnectError'),
 ])
-def test_check_history(client, monkeypatch, outcome, expected_up, expected_error):
+def test_check_history(client, monkeypatch, business_metrics, outcome, expected_up, expected_error):
     @contextmanager
     def stream(method, url, **kwargs):
         assert kwargs == {'timeout': 5.0, 'follow_redirects': False}
@@ -95,6 +96,8 @@ def test_check_history(client, monkeypatch, outcome, expected_up, expected_error
             raise outcome
         yield httpx.Response(outcome)
     monkeypatch.setattr('app.checker.httpx.stream', stream)
+    ticks = iter([0.0, 0.25, 1.0, 1.25])
+    monkeypatch.setattr('app.checker.time', SimpleNamespace(perf_counter=lambda: next(ticks)))
     monitor_id = create(client)
     path = f'/monitors/{monitor_id}'
     first = client.post(path + '/check')
@@ -112,6 +115,12 @@ def test_check_history(client, monkeypatch, outcome, expected_up, expected_error
     assert client.delete(path).status_code == 409
     assert len(client.get(path + '/checks').json()) == 2
     assert client.patch(path, json={'is_active': False}).status_code == 200
+    label = 'up' if expected_up else 'down'
+    other_label = 'down' if expected_up else 'up'
+    assert business_metrics.get_sample_value('statusmonitor_checks_total', {'result': label}) == 2
+    assert business_metrics.get_sample_value('statusmonitor_checks_total', {'result': other_label}) == 0
+    assert business_metrics.get_sample_value('statusmonitor_check_duration_seconds_count') == 2
+    assert business_metrics.get_sample_value('statusmonitor_check_duration_seconds_sum') == 0.5
 
 
 @pytest.mark.parametrize('query', ['limit=0', 'limit=101', 'offset=-1'])
