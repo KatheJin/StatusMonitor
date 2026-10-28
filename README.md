@@ -2,7 +2,8 @@
 
 A FastAPI and PostgreSQL service for recording website availability checks.
 An incremental backend/SWE/operations portfolio project with manual and scheduled
-checks and Prometheus scraping of API runtime metrics. Grafana remains planned.
+checks, Prometheus scraping, and Grafana with an automatically provisioned data source.
+Dashboards are deferred to Stage 4.4b.
 
 ## Architecture
 
@@ -433,6 +434,57 @@ those samples should remain, with a gap while Prometheus was stopped.
 
 Docker execution is unavailable in the Codex environment; target UP, real scraping
 and retained samples must be verified locally using these steps.
+
+## Grafana (Stage 4.4a)
+
+Grafana queries Prometheus; Prometheus continues to scrape API and worker every
+15 seconds. Grafana does not query the application's PostgreSQL database.
+Compose connects the services on its default network, where `prometheus` resolves
+to the Prometheus container. The data source therefore uses
+`http://prometheus:9090`, not localhost (which would mean Grafana itself).
+
+```powershell
+docker compose config --quiet
+docker compose up -d
+docker compose logs --tail=50 grafana
+Invoke-RestMethod http://127.0.0.1:3000/api/health
+```
+
+Open [Grafana](http://127.0.0.1:3000). On a fresh Grafana volume, sign in with
+username `admin` and password `admin`, then choose a new password when prompted.
+The port is bound only to host loopback. Subsequent logins use your changed password.
+
+Under **Connections → Data sources**, `Prometheus` should already exist and be the
+default. In **Explore**, select it, switch to the PromQL code editor, and run:
+
+```promql
+up{job=~"statusmonitor-api|statusmonitor-worker"}
+```
+
+Expect two series with value 1 when both targets are healthy. You can also query
+`statusmonitor_checks_total` to inspect existing business metrics. No dashboard
+is installed in this stage. If no data appears, wait one scrape interval and check
+[Prometheus Targets](http://127.0.0.1:9090/targets) and `docker compose logs grafana prometheus`.
+
+Configuration details:
+
+- `grafana/grafana:13.3.0` pins the image version instead of using `latest`.
+- `grafana_data:/var/lib/grafana` persists Grafana's users, settings and local
+  database. It is separate from `prometheus_data`, which stores metric samples.
+- The read-only provisioning directory contains version-controlled data-source
+  configuration, automatically applied on startup. `uid: prometheus` is a stable
+  identity for future dashboards; `access: proxy` makes Grafana's server send queries;
+  `editable: false` keeps this configuration managed by the file.
+- `timeInterval: 15s` matches Prometheus's scrape interval; it does not change scraping.
+- `depends_on: service_started` starts Prometheus first but does not guarantee it
+  is ready yet; queries can briefly fail during startup and work once it is ready.
+
+After editing provisioning, run `docker compose restart grafana`. Ordinary
+`docker compose down` preserves named volumes for the same project; `down -v`
+deletes Grafana, Prometheus and PostgreSQL data. To test Grafana container recreation
+without deleting data, use `docker compose up -d --force-recreate --no-deps grafana`,
+then confirm your changed password and the provisioned data source still work.
+See [Grafana provisioning documentation](https://grafana.com/docs/grafana/latest/administration/provisioning/).
 
 ## Tests
 
