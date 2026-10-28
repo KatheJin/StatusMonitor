@@ -3,7 +3,7 @@
 A FastAPI and PostgreSQL service for recording website availability checks.
 An incremental backend/SWE/operations portfolio project with manual and scheduled
 checks, Prometheus scraping, and Grafana with an automatically provisioned data source.
-Dashboards are deferred to Stage 4.4b.
+The provisioned Status Monitor Overview dashboard summarizes process and check metrics.
 
 ## Architecture
 
@@ -462,8 +462,7 @@ up{job=~"statusmonitor-api|statusmonitor-worker"}
 ```
 
 Expect two series with value 1 when both targets are healthy. You can also query
-`statusmonitor_checks_total` to inspect existing business metrics. No dashboard
-is installed in this stage. If no data appears, wait one scrape interval and check
+`statusmonitor_checks_total` to inspect existing business metrics. If no data appears, wait one scrape interval and check
 [Prometheus Targets](http://127.0.0.1:9090/targets) and `docker compose logs grafana prometheus`.
 
 Configuration details:
@@ -485,6 +484,53 @@ deletes Grafana, Prometheus and PostgreSQL data. To test Grafana container recre
 without deleting data, use `docker compose up -d --force-recreate --no-deps grafana`,
 then confirm your changed password and the provisioned data source still work.
 See [Grafana provisioning documentation](https://grafana.com/docs/grafana/latest/administration/provisioning/).
+
+## Status Monitor Overview (Stage 4.4b)
+
+```powershell
+docker compose config --quiet
+docker compose up -d --no-deps grafana
+docker compose logs --tail=100 grafana
+```
+
+The command recreates Grafana when its mounts have changed, retaining its volume.
+Open [Status Monitor Overview](http://127.0.0.1:3000/d/statusmonitor-overview), or
+find it under **Dashboards → Status Monitor**. Use your existing Grafana login.
+Default time range is one hour, auto-refresh is 15 seconds, timezone is your browser's.
+
+| Panel | Query meaning and units |
+| --- | --- |
+| API / Worker — scrape status | Instant `up`: 1 = UP, 0 = DOWN; missing series = No data. This is scrape availability, not target website health or proof the worker is scheduling checks. |
+| Check rate by process and result | `sum by (job, result) (rate(statusmonitor_checks_total[5m]))`, filtered to the API/worker jobs: checks/second, separated by process and up/down result. |
+| HTTP check duration — p95 by process | `histogram_quantile(0.95, sum by (job, le) (rate(statusmonitor_check_duration_seconds_bucket[5m])))`, filtered to the two jobs: duration in seconds. |
+| Checks in the last hour — estimated | `sum by (job, result) (increase(statusmonitor_checks_total[1h]))`, filtered to the two jobs: estimated checks over one hour ending at the selected end time. |
+
+Counters accumulate until a process restart. `rate` computes a per-second rate;
+`increase` estimates the increment within the window. Both handle counter resets,
+and are applied before aggregation. The one-hour panel always uses `[1h]`, even
+when you choose a different dashboard time range. Extrapolation can produce
+fractional counts: use PostgreSQL history when exact historical counts are needed.
+
+Histogram buckets count checks below each duration boundary (`le`). The p95 query
+first computes bucket rates, preserves `le` and process (`job`), then interpolates
+the duration below which approximately 95% of observed checks fall. It is not an
+average, maximum, or average of per-process percentiles. Bucket spacing and small
+sample sizes limit precision. No checks in the window means an undefined p95;
+missing data is deliberately not replaced with zero. Rates require multiple scrapes.
+
+`grafana/provisioning/dashboards/statusmonitor.yml` tells Grafana to load JSON from
+`/var/lib/grafana/dashboards`, mounted read-only from `grafana/dashboards`.
+The JSON uses data-source UID `prometheus` and stable dashboard UID
+`statusmonitor-overview`. Grafana imports it at startup and polls every 30 seconds.
+Edit the repository JSON to change panels: UI saving is disabled so Git remains
+the source of truth. Restart/recreation restores the definition from these files.
+Removing the JSON also removes the provisioned dashboard on reconciliation.
+This follows [Grafana dashboard provisioning](https://grafana.com/docs/grafana/latest/administration/provisioning/#dashboards).
+
+To verify, check both status values, run a manual check and wait for a worker cycle
+plus a scrape, then inspect the rate/count series. Allow several minutes for the
+5-minute rate/p95 panels. Restart Grafana and confirm the same dashboard URL loads.
+No business code or Prometheus scrape configuration changes are required.
 
 ## Tests
 
