@@ -541,7 +541,7 @@ python -m pytest -q
 Tests use in-memory SQLite with foreign keys enabled and mocked HTTP calls.
 They require neither Docker nor access to public websites, and do not touch your
 development database. They are not a substitute for PostgreSQL migration and
-integration tests. There are 34 tests: 19 API and 15 worker tests. Worker persistence
+integration tests. There are 39 tests: 19 API and 20 worker tests. Worker persistence
 tests use SQLite; cadence, retry and signal tests use mocks without sleeping for
 60 seconds. There are no automated PostgreSQL integration tests in this stage.
 Upstream Starlette/AnyIO deprecation warnings are currently visible.
@@ -555,3 +555,9 @@ Before deployment, add access controls and an explicit outbound network policy.
 Application containers are included for local reproducible setup. Production
 deployment instructions and observability remain future increments.
 See [development plan](docs/development-plan.md).
+
+## Worker reliability assessment (Stage 5a)
+
+See [the assessment and fault-injection plan](docs/worker-reliability-assessment.md)
+for existing recovery behavior, limitations, test evidence and proposed minimal changes.
+This assessment adds tests only; it does not change the runtime reliability policy.

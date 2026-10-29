@@ -218,3 +218,77 @@ def test_main_registers_stop_signals_and_disposes_engine(monkeypatch):
     metrics_server.shutdown.assert_called_once()
     metrics_server.server_close.assert_called_once()
     metrics_thread.join.assert_called_once()
+
+
+def test_connection_error_is_saved_and_next_monitor_runs(sessions, monkeypatch):
+    @contextmanager
+    def stream(*args, **kwargs):
+        raise httpx.ConnectError('connection refused')
+        yield
+    monkeypatch.setattr('app.checker.httpx.stream', stream)
+    worker.run_cycle(Event(), sessions)
+    saved = results(sessions)
+    assert [row.monitor_id for row in saved] == [1, 3]
+    assert all(not row.is_up and row.status_code is None and row.error == 'ConnectError' for row in saved)
+
+
+def test_stop_during_real_check_commits_current_only(sessions, monkeypatch):
+    stop = Event()
+    @contextmanager
+    def stream(*args, **kwargs):
+        stop.set()
+        yield httpx.Response(200)
+    monkeypatch.setattr('app.checker.httpx.stream', stream)
+    worker.run_cycle(stop, sessions)
+    assert [row.monitor_id for row in results(sessions)] == [1]
+
+
+def test_discovery_session_failure_then_real_cycle_recovers(sessions, monkeypatch):
+    calls = 0
+    stop = Event()
+    @contextmanager
+    def factory():
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            raise OperationalError('connect', {}, Exception('offline'))
+        with sessions() as db:
+            yield db
+    @contextmanager
+    def stream(*args, **kwargs):
+        yield httpx.Response(200)
+    waits = []
+    def wait(seconds):
+        waits.append(seconds)
+        if len(waits) == 2:
+            stop.set()
+    monkeypatch.setattr('app.checker.httpx.stream', stream)
+    monkeypatch.setattr(stop, 'wait', wait)
+    worker.run_worker(stop, factory)
+    assert len(waits) == 2
+    assert [row.monitor_id for row in results(sessions)] == [1, 3]
+
+
+def test_independent_cycles_have_no_deduplication(sessions, monkeypatch):
+    # Deterministic evidence of no claim/deduplication, not a concurrent-process test.
+    @contextmanager
+    def stream(*args, **kwargs):
+        yield httpx.Response(200)
+    monkeypatch.setattr('app.checker.httpx.stream', stream)
+    worker.run_cycle(Event(), sessions)
+    worker.run_cycle(Event(), sessions)
+    assert [row.monitor_id for row in results(sessions)] == [1, 3, 1, 3]
+
+
+def test_refresh_failure_after_commit_does_not_undo_history(sessions, monkeypatch, business_metrics):
+    @contextmanager
+    def stream(*args, **kwargs):
+        yield httpx.Response(200)
+    monkeypatch.setattr('app.checker.httpx.stream', stream)
+    with sessions() as db:
+        monitor = db.get(Monitor, 1)
+        monkeypatch.setattr(db, 'refresh', Mock(side_effect=OperationalError('refresh', {}, Exception('offline'))))
+        with pytest.raises(OperationalError):
+            worker.run_check(monitor, db)
+    assert [row.monitor_id for row in results(sessions)] == [1]
+    assert business_metrics.get_sample_value('statusmonitor_checks_total', {'result': 'up'}) == 1
