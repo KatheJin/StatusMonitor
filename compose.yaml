@@ -61,6 +61,15 @@ services:
       migrate:
         condition: service_completed_successfully
 
+  detector:
+    <<: *app
+    command: ["python", "-m", "app.incidents"]
+    depends_on:
+      db:
+        condition: service_healthy
+      migrate:
+        condition: service_completed_successfully
+
   prometheus:
     image: prom/prometheus:v3.5.0
     command:

@@ -3,13 +3,21 @@
 import time
 
 import httpx
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.models import CheckResult, Monitor
 from app.metrics import record_check
 
 
-def run_check(monitor: Monitor, db: Session) -> CheckResult:
+def run_check(monitor: Monitor, db: Session, *, source: str = "manual") -> CheckResult:
+    if source not in ("manual", "automatic"):
+        raise ValueError("Unsupported check source")
+    # Serialize all official writes per target, including commit order and revision.
+    monitor = db.scalar(select(Monitor).where(Monitor.id == monitor.id)
+                        .with_for_update().execution_options(populate_existing=True))
+    if monitor is None:
+        raise ValueError("Monitor no longer exists")
     start = time.perf_counter()
     status_code = None
     error = None
@@ -25,6 +33,9 @@ def run_check(monitor: Monitor, db: Session) -> CheckResult:
     duration_seconds = time.perf_counter() - start
     is_up = status_code is not None and 200 <= status_code < 400
     result = CheckResult(
+        source=source,
+        config_revision=monitor.config_revision,
+        check_url=monitor.url,
         monitor_id=monitor.id,
         status_code=status_code,
         is_up=is_up,

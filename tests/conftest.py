@@ -1,6 +1,10 @@
 """Isolated metric registries keep assertions independent of test order."""
+import os
 import pytest
 from prometheus_client import CollectorRegistry, Counter, Histogram
+
+for key in ('POSTGRES_USER', 'POSTGRES_PASSWORD', 'POSTGRES_DB'):
+    os.environ.setdefault(key, 'test')
 
 
 @pytest.fixture

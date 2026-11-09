@@ -55,6 +55,7 @@ def test_cycle_uses_real_checker_and_persists_only_active(sessions, monkeypatch,
     worker.run_cycle(Event(), sessions)
     saved = results(sessions)
     assert [row.monitor_id for row in saved] == [1, 3]
+    assert all(row.source == 'automatic' and row.config_revision == 1 for row in saved)
     assert all(row.is_up == (outcome == 200) for row in saved)
     assert all(row.error == ("timeout" if isinstance(outcome, Exception) else None) for row in saved)
     label = 'up' if outcome == 200 else 'down'
@@ -74,7 +75,9 @@ def test_uncommitted_check_does_not_increment_metrics(sessions, monkeypatch, bus
         # Nonexistent monitor forces a real foreign-key failure on commit.
         from sqlalchemy.exc import IntegrityError
         with pytest.raises(IntegrityError):
-            worker.run_check(Monitor(id=999, name='missing', url='https://example.com'), db)
+            db.add(CheckResult(monitor_id=999, is_up=False))
+            with db.no_autoflush:
+                worker.run_check(db.get(Monitor, 1), db)
     assert business_metrics.get_sample_value('statusmonitor_checks_total', {'result': 'up'}) == 0
     assert business_metrics.get_sample_value('statusmonitor_check_duration_seconds_count') == 0
 
@@ -82,7 +85,7 @@ def test_uncommitted_check_does_not_increment_metrics(sessions, monkeypatch, bus
 def test_failed_transaction_does_not_break_next_monitor(sessions, monkeypatch, caplog):
     used_sessions = []
 
-    def check(monitor, db):
+    def check(monitor, db, **kwargs):
         used_sessions.append(db)
         if monitor.id == 1:
             db.add(CheckResult(monitor_id=999, is_up=False))
@@ -103,7 +106,7 @@ def test_failed_transaction_does_not_break_next_monitor(sessions, monkeypatch, c
 def test_rechecks_state_before_check(sessions, monkeypatch, change):
     checked = []
 
-    def check(monitor, db):
+    def check(monitor, db, **kwargs):
         checked.append(monitor.id)
         other = db.get(Monitor, 3)
         if change == "disable":
@@ -120,7 +123,7 @@ def test_rechecks_state_before_check(sessions, monkeypatch, change):
 
 def test_next_cycle_discovers_new_and_enabled_monitors(sessions, monkeypatch):
     checked = []
-    monkeypatch.setattr(worker, "run_check", lambda monitor, db: (
+    monkeypatch.setattr(worker, "run_check", lambda monitor, db, **kwargs: (
         checked.append(monitor.id) or Mock(id=1, is_up=True)
     ))
     worker.run_cycle(Event(), sessions)
@@ -137,7 +140,7 @@ def test_stop_finishes_current_check_and_skips_remaining(sessions, monkeypatch):
     stop = Event()
     checked = []
 
-    def check(monitor, db):
+    def check(monitor, db, **kwargs):
         checked.append(monitor.id)
         stop.set()
         return Mock(id=1, is_up=True)
