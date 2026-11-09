@@ -33,7 +33,7 @@ def run_cycle(stop_event: Event, session_factory=SessionLocal) -> None:
                 monitor = db.get(Monitor, monitor_id)
                 if monitor is None or not monitor.is_active:
                     continue
-                result = run_check(monitor, db)
+                result = run_check(monitor, db, source="automatic")
                 logger.info(
                     "Check saved monitor_id=%s result_id=%s is_up=%s",
                     monitor_id, result.id, result.is_up,

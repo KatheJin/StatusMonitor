@@ -31,6 +31,7 @@ class MonitorUpdate(BaseModel):
 
 
 class MonitorRead(BaseModel):
+    config_revision: int
     id: int
     name: str
     url: str
@@ -41,6 +42,9 @@ class MonitorRead(BaseModel):
 
 
 class CheckResultRead(BaseModel):
+    source: str
+    config_revision: int
+    check_url: str | None
     id: int
     monitor_id: int
     status_code: int | None

@@ -106,6 +106,9 @@ def test_check_history(client, monkeypatch, business_metrics, outcome, expected_
     assert result['is_up'] is expected_up
     assert result['error'] == expected_error
     assert result['response_time_ms'] >= 0
+    assert result['source'] == 'manual'
+    assert result['config_revision'] == 1
+    assert result['check_url'] == 'https://example.com/'
     assert result['status_code'] == (outcome if isinstance(outcome, int) else None)
     second = client.post(path + '/check').json()
     assert client.get(path + '/checks?limit=1').json()[0]['id'] == second['id']
@@ -140,3 +143,12 @@ def test_db_unavailable(client):
     app.dependency_overrides[get_db] = lambda: BrokenSession()
     assert client.get('/db-health').status_code == 503
     assert client.get('/health').status_code == 200
+
+
+def test_patch_revision_rules(client):
+    monitor_id = create(client)
+    path = f'/monitors/{monitor_id}'
+    assert client.patch(path, json={'name': 'Renamed'}).json()['config_revision'] == 1
+    assert client.patch(path, json={'url': 'https://example.org/'}).json()['config_revision'] == 2
+    assert client.patch(path, json={'url': 'https://example.org/'}).json()['config_revision'] == 2
+    assert client.patch(path, json={'is_active': False}).json()['config_revision'] == 3

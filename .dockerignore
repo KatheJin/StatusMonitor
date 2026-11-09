@@ -9,3 +9,8 @@
 !.dockerignore
 **/__pycache__/
 **/*.pyc
+!demo/
+!demo/remediation/
+!demo/remediation/**
+!demo/incidents/
+!demo/incidents/**

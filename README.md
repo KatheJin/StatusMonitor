@@ -541,7 +541,7 @@ python -m pytest -q
 Tests use in-memory SQLite with foreign keys enabled and mocked HTTP calls.
 They require neither Docker nor access to public websites, and do not touch your
 development database. They are not a substitute for PostgreSQL migration and
-integration tests. There are 34 tests: 19 API and 15 worker tests. Worker persistence
+integration tests. There are 70 tests: 20 API, 20 worker, 9 prototype and 21 incident tests. Worker persistence
 tests use SQLite; cadence, retry and signal tests use mocks without sleeping for
 60 seconds. There are no automated PostgreSQL integration tests in this stage.
 Upstream Starlette/AnyIO deprecation warnings are currently visible.
@@ -555,3 +555,36 @@ Before deployment, add access controls and an explicit outbound network policy.
 Application containers are included for local reproducible setup. Production
 deployment instructions and observability remain future increments.
 See [development plan](docs/development-plan.md).
+
+## Worker reliability assessment (Stage 5a)
+
+See [the assessment and fault-injection plan](docs/worker-reliability-assessment.md)
+for existing recovery behavior, limitations, test evidence and proposed minimal changes.
+This assessment adds tests only; it does not change the runtime reliability policy.
+
+## Disposable automated remediation MVP
+
+See [the demo and audit documentation](docs/remediation-mvp.md). Run
+`scripts/demo-remediation.ps1` to create a separate local blue/green demo, detect
+three failed checks, roll back traffic once to a verified baseline, and verify
+three successful recovery checks. This does not give the existing API or worker
+Docker access. Containerized execution remains unverified until Docker Desktop
+is available; the implementation includes automated SQLite tests.
+
+## Persisted Incident + Dry-run Recovery Decision (Stage A)
+
+The separate detector consumes committed automatic CheckResults, opens an Incident
+on three consecutive failures, and passively resolves it after three consecutive
+successes. Manual/legacy checks are excluded; configuration revisions prevent
+mixing evidence across target changes. Recovery is denied by default. A local
+administrator may configure a managed-service mapping for a dry-run recommendation;
+no Docker operation is executed. See [design, policy and acceptance steps](docs/persisted-incidents.md).
+
+```powershell
+# Disposable PostgreSQL migration, concurrency and real worker HTTP acceptance:
+.\scripts\verify-incidents.ps1
+```
+
+The script requires Docker Desktop and preserves independent test volumes.
+Docker execution was unavailable during implementation; real integration results
+must be obtained before enabling a recovery executor in Stage B.

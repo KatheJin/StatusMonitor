@@ -84,7 +84,7 @@ def update_monitor(
     monitor_data: MonitorUpdate,
     db: Session = Depends(get_db),
 ):
-    monitor = db.get(Monitor, monitor_id)
+    monitor = db.scalar(select(Monitor).where(Monitor.id == monitor_id).with_for_update())
 
     if monitor is None:
         raise HTTPException(
@@ -93,6 +93,10 @@ def update_monitor(
         )
 
     update_data = monitor_data.model_dump(exclude_unset=True, mode="json")
+
+    if any(field in update_data and update_data[field] != getattr(monitor, field)
+           for field in ("url", "is_active")):
+        monitor.config_revision += 1
 
     for field, value in update_data.items():
         setattr(monitor, field, value)
