@@ -1,0 +1,57 @@
+x-demo: &demo
+  build:
+    context: ../..
+    dockerfile: demo/remediation/Dockerfile
+  image: ${COMPOSE_PROJECT_NAME}-demo:local
+  read_only: true
+  cap_drop: [ALL]
+  security_opt: [no-new-privileges:true]
+
+x-db-env: &db-env
+  POSTGRES_USER: demo
+  POSTGRES_PASSWORD: disposable-demo-only
+  POSTGRES_DB: remediation_demo
+  POSTGRES_HOST: db
+  POSTGRES_PORT: "5432"
+
+services:
+  db:
+    image: postgres:16
+    environment: *db-env
+    volumes: [audit_data:/var/lib/postgresql/data]
+    healthcheck:
+      test: [CMD-SHELL, "pg_isready -U demo -d remediation_demo"]
+      interval: 2s
+      timeout: 3s
+      retries: 30
+  migrate:
+    <<: *demo
+    environment: *db-env
+    command: [python, -m, alembic, upgrade, head]
+    depends_on:
+      db: {condition: service_healthy}
+  healthy:
+    <<: *demo
+    environment: {DEMO_ROLE: healthy}
+    command: [python, demo/remediation/server.py]
+  failing:
+    <<: *demo
+    environment: {DEMO_ROLE: failing}
+    command: [python, demo/remediation/server.py]
+  router:
+    <<: *demo
+    environment: {DEMO_ROLE: router}
+    command: [python, demo/remediation/server.py]
+    volumes: [route_data:/control:ro]
+    depends_on: [healthy, failing]
+  controller:
+    <<: *demo
+    environment: *db-env
+    command: [python, -m, demo.remediation.run]
+    volumes: [route_data:/control]
+    depends_on:
+      migrate: {condition: service_completed_successfully}
+      router: {condition: service_started}
+volumes:
+  audit_data:
+  route_data:

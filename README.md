@@ -561,3 +561,12 @@ See [development plan](docs/development-plan.md).
 See [the assessment and fault-injection plan](docs/worker-reliability-assessment.md)
 for existing recovery behavior, limitations, test evidence and proposed minimal changes.
 This assessment adds tests only; it does not change the runtime reliability policy.
+
+## Disposable automated remediation MVP
+
+See [the demo and audit documentation](docs/remediation-mvp.md). Run
+`scripts/demo-remediation.ps1` to create a separate local blue/green demo, detect
+three failed checks, roll back traffic once to a verified baseline, and verify
+three successful recovery checks. This does not give the existing API or worker
+Docker access. Containerized execution remains unverified until Docker Desktop
+is available; the implementation includes automated SQLite tests.

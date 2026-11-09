@@ -42,3 +42,20 @@ class CheckResult(Base):
         nullable=False,
         server_default=func.now(),
     )
+
+class RemediationRun(Base):
+    __tablename__ = 'remediation_runs'
+    id: Mapped[str] = mapped_column(String(36), primary_key=True)
+    state: Mapped[str] = mapped_column(String(32), nullable=False)
+    attempts: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    baseline_verified: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class RemediationEvent(Base):
+    __tablename__ = 'remediation_events'
+    id: Mapped[int] = mapped_column(primary_key=True)
+    run_id: Mapped[str] = mapped_column(ForeignKey('remediation_runs.id'), index=True)
+    kind: Mapped[str] = mapped_column(String(40))
+    evidence: Mapped[str] = mapped_column(Text)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
